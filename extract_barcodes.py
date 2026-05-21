@@ -1,28 +1,19 @@
 #!/usr/bin/env python3
 """
 Extract primary and alt barcodes from the Minfos catalogue for a list of MNPNs.
+No login required — navigates directly to catalogue.minfos.com.au.
 Outputs results to a timestamped CSV file.
 
 Usage:
-    python extract_barcodes.py
-
-Credentials are read from a .env file (MINFOS_USERNAME, MINFOS_PASSWORD)
-or prompted interactively at runtime.
+    python3 extract_barcodes.py
 """
 
 import asyncio
 import csv
-import json
 import os
 import re
 import sys
 from datetime import datetime
-
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
 
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
@@ -48,100 +39,16 @@ async def idle(page, timeout=12000):
 
 
 def digits_only(text: str) -> str:
-    """Return only the numeric portion of a string."""
     return re.sub(r"\D", "", text or "")
 
 
 def looks_like_barcode(value: str) -> bool:
-    """Return True if value looks like a real barcode (8–14 digits)."""
     v = digits_only(value)
     return 8 <= len(v) <= 14
-
-# ── Login ─────────────────────────────────────────────────────────────────────
-
-async def login(page, access_code: str) -> bool:
-    print(f"  Navigating to {BASE_URL} …")
-    await page.goto(BASE_URL, wait_until="domcontentloaded")
-    await idle(page)
-
-    # Save screenshot + all input fields to help debug selector issues
-    await page.screenshot(path="login_page.png", full_page=True)
-    inputs = await page.locator("input").all()
-    print(f"  Found {len(inputs)} input field(s) on login page:")
-    for inp in inputs:
-        tag_type = await inp.get_attribute("type") or ""
-        tag_name = await inp.get_attribute("name") or ""
-        tag_id   = await inp.get_attribute("id") or ""
-        tag_ph   = await inp.get_attribute("placeholder") or ""
-        tag_fc   = await inp.get_attribute("formcontrolname") or ""
-        print(f"    type={tag_type!r}  name={tag_name!r}  id={tag_id!r}  placeholder={tag_ph!r}  formcontrolname={tag_fc!r}")
-    buttons = await page.locator("button").all()
-    print(f"  Found {len(buttons)} button(s):")
-    for btn in buttons:
-        print(f"    text={((await btn.text_content()) or '').strip()!r}")
-
-    # Locate the Minfos ID field
-    for sel in [
-        'input[placeholder*="minfos id" i]',
-        'input[placeholder*="minfosid" i]',
-        'input[placeholder*="id" i]',
-        'input[name*="minfosid" i]',
-        'input[name*="minfos" i]',
-        'input[id*="minfosid" i]',
-        'input[id*="minfos" i]',
-        'input[formcontrolname*="minfos" i]',
-        'input[formcontrolname*="id" i]',
-        'input[type="text"]',
-        'input[type="number"]',
-        'input[type="password"]',
-    ]:
-        loc = page.locator(sel).first
-        if await loc.count():
-            print(f"  Using selector: {sel}")
-            await loc.fill(access_code)
-            break
-    else:
-        print("  ERROR: Could not find access code field on login page.")
-        return False
-
-    # Submit
-    for sel in [
-        'button[type="submit"]', 'input[type="submit"]',
-        'button:has-text("Login")', 'button:has-text("Log In")',
-        'button:has-text("Sign In")', 'button:has-text("Continue")',
-        'button:has-text("Access")', 'button:has-text("Enter")',
-    ]:
-        btn = page.locator(sel).first
-        if await btn.count():
-            print(f"  Clicking submit: {sel}")
-            await btn.click()
-            break
-
-    await idle(page, timeout=20000)
-    print(f"  URL after submit: {page.url}")
-
-    # Confirm we're past the login page
-    if "login" in page.url.lower() or "signin" in page.url.lower():
-        await page.screenshot(path="login_failed.png", full_page=True)
-        print("  ERROR: Still on login page — check access code.")
-        print("  Screenshots saved: login_page.png and login_failed.png")
-        return False
-
-    print("  Logged in successfully.")
-    return True
 
 # ── Product lookup ────────────────────────────────────────────────────────────
 
 async def fetch_product(page, mnpn: str) -> dict:
-    """
-    Navigate to the product page for the given MNPN and return barcode data.
-
-    Strategy:
-      1. Try direct URL patterns (Angular hash routes common to Minfos).
-      2. Fall back to the search box.
-      3. Intercept JSON API responses to get structured barcode data.
-      4. Fall back to DOM scraping.
-    """
     result = {
         "mnpn": mnpn,
         "description": "",
@@ -150,7 +57,6 @@ async def fetch_product(page, mnpn: str) -> dict:
         "error": "",
     }
 
-    # Collect any JSON responses that mention barcodes
     api_data: list[dict] = []
 
     async def handle_response(response):
@@ -158,7 +64,6 @@ async def fetch_product(page, mnpn: str) -> dict:
         if "json" not in ct:
             return
         url = response.url
-        # Only care about responses that look like product/catalogue API calls
         if not any(k in url for k in ["product", "item", "catalogue", "barcode", mnpn]):
             return
         try:
@@ -170,9 +75,7 @@ async def fetch_product(page, mnpn: str) -> dict:
     page.on("response", handle_response)
 
     try:
-        navigated = False
-
-        # 1. Try common direct-URL patterns
+        # Try direct URL patterns first
         candidate_paths = [
             f"/#/products/{mnpn}",
             f"/#/product/{mnpn}",
@@ -182,16 +85,16 @@ async def fetch_product(page, mnpn: str) -> dict:
             f"/#/search?q={mnpn}",
             f"/#/search?mnpn={mnpn}",
         ]
+        navigated = False
         for path in candidate_paths:
             url = BASE_URL + path
             await page.goto(url, wait_until="domcontentloaded")
             await idle(page)
-            # If a different URL loaded (redirect away = not found), skip
             if page.url.startswith(url.split("?")[0]):
                 navigated = True
                 break
 
-        # 2. Fall back to search box
+        # Fall back to search box
         if not navigated:
             await page.goto(BASE_URL, wait_until="domcontentloaded")
             await idle(page)
@@ -213,15 +116,15 @@ async def fetch_product(page, mnpn: str) -> dict:
                     await idle(page)
                     break
 
-            # Click on the first result that matches our MNPN
+            # Click first matching result
             for sel in [
                 f'[data-mnpn="{mnpn}"]',
                 f'a:has-text("{mnpn}")',
                 f'td:has-text("{mnpn}")',
-                'table tbody tr:first-child td:first-child',
+                'table tbody tr:first-child',
+                'mat-row:first-child',
                 '.product-result:first-child',
                 '.search-result:first-child a',
-                'mat-row:first-child',
             ]:
                 loc = page.locator(sel).first
                 if await loc.count():
@@ -229,22 +132,17 @@ async def fetch_product(page, mnpn: str) -> dict:
                     await idle(page)
                     break
 
-        # ── Extract from intercepted API responses ──────────────────────────
-
+        # Extract from intercepted API responses
         for entry in api_data:
-            body = entry["body"]
-            found = _parse_api_body(body, mnpn, result)
-            if found:
+            if _parse_api_body(entry["body"], mnpn, result):
                 break
 
-        # ── Fall back to DOM scraping ───────────────────────────────────────
-
+        # Fall back to DOM scraping
         if not result["primary_barcode"]:
             await _scrape_dom(page, result)
 
     except Exception as exc:
         result["error"] = str(exc)
-
     finally:
         page.remove_listener("response", handle_response)
 
@@ -252,10 +150,6 @@ async def fetch_product(page, mnpn: str) -> dict:
 
 
 def _parse_api_body(body, mnpn: str, result: dict) -> bool:
-    """
-    Recursively search a JSON structure for barcode fields.
-    Returns True if primary barcode was found.
-    """
     if isinstance(body, list):
         for item in body:
             if _parse_api_body(item, mnpn, result):
@@ -265,45 +159,32 @@ def _parse_api_body(body, mnpn: str, result: dict) -> bool:
     if not isinstance(body, dict):
         return False
 
-    # Check if this object is for our MNPN
     our_item = any(
         str(body.get(k, "")).strip() == mnpn
         for k in ["mnpn", "MNPN", "minfosNationalProductNumber", "productNumber", "id"]
     )
 
     if not our_item:
-        # Recurse into nested objects
         for v in body.values():
             if isinstance(v, (dict, list)):
                 if _parse_api_body(v, mnpn, result):
                     return True
         return False
 
-    # Found our product — extract description
     for k in ["description", "productDescription", "name", "productName"]:
         if body.get(k):
             result["description"] = str(body[k]).strip()
             break
 
-    # Extract primary barcode
-    primary_keys = [
-        "barcode", "primaryBarcode", "ean", "ean13", "upc",
-        "gtin", "scanCode", "scancode",
-    ]
-    for k in primary_keys:
+    for k in ["barcode", "primaryBarcode", "ean", "ean13", "upc", "gtin", "scanCode", "scancode"]:
         v = str(body.get(k, "")).strip()
         if looks_like_barcode(v):
             result["primary_barcode"] = digits_only(v)
             break
 
-    # Extract alt barcodes — may be a list or a separate field
     alt_values: list[str] = []
-    alt_keys = [
-        "altBarcodes", "alternativeBarcodes", "altBarcode",
-        "alternativeBarcode", "secondaryBarcodes", "secondaryBarcode",
-        "additionalBarcodes",
-    ]
-    for k in alt_keys:
+    for k in ["altBarcodes", "alternativeBarcodes", "altBarcode", "alternativeBarcode",
+              "secondaryBarcodes", "secondaryBarcode", "additionalBarcodes"]:
         v = body.get(k)
         if isinstance(v, list):
             for item in v:
@@ -318,11 +199,7 @@ def _parse_api_body(body, mnpn: str, result: dict) -> bool:
 
 
 async def _scrape_dom(page, result: dict):
-    """Last-resort: scrape visible text from the page to find barcodes."""
     try:
-        content = await page.content()
-
-        # Description
         if not result["description"]:
             for sel in ["h1", "h2", ".product-name", ".product-title", "[class*='description']"]:
                 loc = page.locator(sel).first
@@ -332,7 +209,6 @@ async def _scrape_dom(page, result: dict):
                         result["description"] = t
                         break
 
-        # Walk all table rows and labelled fields looking for "barcode"
         primary_found = False
         alt_values: list[str] = []
 
@@ -342,7 +218,7 @@ async def _scrape_dom(page, result: dict):
             row_text = (await rows.nth(i).text_content() or "").strip()
             if "barcode" not in row_text.lower():
                 continue
-            numbers = [x for x in re.findall(r"\b\d{8,14}\b", row_text)]
+            numbers = re.findall(r"\b\d{8,14}\b", row_text)
             if not numbers:
                 continue
             is_alt = bool(re.search(r"alt|alternate|alternative|secondary", row_text, re.I))
@@ -354,7 +230,7 @@ async def _scrape_dom(page, result: dict):
                 if len(numbers) > 1:
                     alt_values.extend(numbers[1:])
 
-        result["alt_barcodes"] = "; ".join(dict.fromkeys(alt_values))  # dedup, preserve order
+        result["alt_barcodes"] = "; ".join(dict.fromkeys(alt_values))
 
     except Exception as exc:
         if not result["error"]:
@@ -363,27 +239,23 @@ async def _scrape_dom(page, result: dict):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
-    access_code = os.getenv("MINFOS_ID") or input("Minfos ID: ").strip()
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = f"barcodes_{timestamp}.csv"
 
-    print(f"\nProcessing {len(MNPNS)} MNPNs  →  {output_file}\n")
+    print(f"Processing {len(MNPNS)} MNPNs  →  {output_file}\n")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=False,      # Change to True once you've verified it works
+            headless=True,
             args=["--no-sandbox", "--disable-dev-shm-usage"],
         )
         context = await browser.new_context(viewport={"width": 1400, "height": 900})
         page = await context.new_page()
 
-        print("Step 1/2 — Logging in …")
-        if not await login(page, access_code):
-            await browser.close()
-            sys.exit(1)
-
-        print(f"\nStep 2/2 — Extracting barcodes …\n")
+        print("Opening catalogue …")
+        await page.goto(BASE_URL, wait_until="domcontentloaded")
+        await idle(page)
+        print(f"Loaded: {page.url}\n")
 
         results: list[dict] = []
         for idx, mnpn in enumerate(MNPNS, 1):
@@ -401,7 +273,6 @@ async def main():
 
         await browser.close()
 
-    # Write CSV
     fieldnames = ["mnpn", "description", "primary_barcode", "alt_barcodes", "error"]
     with open(output_file, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
