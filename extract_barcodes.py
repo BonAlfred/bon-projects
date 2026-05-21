@@ -64,6 +64,22 @@ async def login(page, access_code: str) -> bool:
     await page.goto(BASE_URL, wait_until="domcontentloaded")
     await idle(page)
 
+    # Save screenshot + all input fields to help debug selector issues
+    await page.screenshot(path="login_page.png", full_page=True)
+    inputs = await page.locator("input").all()
+    print(f"  Found {len(inputs)} input field(s) on login page:")
+    for inp in inputs:
+        tag_type = await inp.get_attribute("type") or ""
+        tag_name = await inp.get_attribute("name") or ""
+        tag_id   = await inp.get_attribute("id") or ""
+        tag_ph   = await inp.get_attribute("placeholder") or ""
+        tag_fc   = await inp.get_attribute("formcontrolname") or ""
+        print(f"    type={tag_type!r}  name={tag_name!r}  id={tag_id!r}  placeholder={tag_ph!r}  formcontrolname={tag_fc!r}")
+    buttons = await page.locator("button").all()
+    print(f"  Found {len(buttons)} button(s):")
+    for btn in buttons:
+        print(f"    text={((await btn.text_content()) or '').strip()!r}")
+
     # Locate the access code field
     for sel in [
         'input[placeholder*="access code" i]',
@@ -78,6 +94,7 @@ async def login(page, access_code: str) -> bool:
     ]:
         loc = page.locator(sel).first
         if await loc.count():
+            print(f"  Using selector: {sel}")
             await loc.fill(access_code)
             break
     else:
@@ -93,14 +110,18 @@ async def login(page, access_code: str) -> bool:
     ]:
         btn = page.locator(sel).first
         if await btn.count():
+            print(f"  Clicking submit: {sel}")
             await btn.click()
             break
 
     await idle(page, timeout=20000)
+    print(f"  URL after submit: {page.url}")
 
     # Confirm we're past the login page
     if "login" in page.url.lower() or "signin" in page.url.lower():
+        await page.screenshot(path="login_failed.png", full_page=True)
         print("  ERROR: Still on login page — check access code.")
+        print("  Screenshots saved: login_page.png and login_failed.png")
         return False
 
     print("  Logged in successfully.")
