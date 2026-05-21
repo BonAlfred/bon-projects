@@ -80,14 +80,17 @@ async def login(page, access_code: str) -> bool:
     for btn in buttons:
         print(f"    text={((await btn.text_content()) or '').strip()!r}")
 
-    # Locate the access code field
+    # Locate the Minfos ID field
     for sel in [
-        'input[placeholder*="access code" i]',
-        'input[placeholder*="accesscode" i]',
-        'input[placeholder*="code" i]',
-        'input[name*="code" i]',
-        'input[id*="code" i]',
-        'input[formcontrolname*="code" i]',
+        'input[placeholder*="minfos id" i]',
+        'input[placeholder*="minfosid" i]',
+        'input[placeholder*="id" i]',
+        'input[name*="minfosid" i]',
+        'input[name*="minfos" i]',
+        'input[id*="minfosid" i]',
+        'input[id*="minfos" i]',
+        'input[formcontrolname*="minfos" i]',
+        'input[formcontrolname*="id" i]',
         'input[type="text"]',
         'input[type="number"]',
         'input[type="password"]',
@@ -360,7 +363,7 @@ async def _scrape_dom(page, result: dict):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
-    access_code = os.getenv("MINFOS_ACCESS_CODE") or input("Minfos catalogue access code: ").strip()
+    access_code = os.getenv("MINFOS_ID") or input("Minfos ID: ").strip()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = f"barcodes_{timestamp}.csv"
