@@ -17,7 +17,6 @@ import os
 import re
 import sys
 from datetime import datetime
-from getpass import getpass
 
 try:
     from dotenv import load_dotenv
@@ -60,34 +59,29 @@ def looks_like_barcode(value: str) -> bool:
 
 # ── Login ─────────────────────────────────────────────────────────────────────
 
-async def login(page, username: str, password: str) -> bool:
+async def login(page, access_code: str) -> bool:
     print(f"  Navigating to {BASE_URL} …")
     await page.goto(BASE_URL, wait_until="domcontentloaded")
     await idle(page)
 
-    # Locate username / email field
+    # Locate the access code field
     for sel in [
-        'input[type="email"]', 'input[name="username"]', 'input[name="email"]',
-        'input[placeholder*="username" i]', 'input[placeholder*="email" i]',
-        'input[formcontrolname="username"]', 'input[formcontrolname="email"]',
-        'input[id*="user" i]', 'input[id*="email" i]',
+        'input[placeholder*="access code" i]',
+        'input[placeholder*="accesscode" i]',
+        'input[placeholder*="code" i]',
+        'input[name*="code" i]',
+        'input[id*="code" i]',
+        'input[formcontrolname*="code" i]',
+        'input[type="text"]',
+        'input[type="number"]',
+        'input[type="password"]',
     ]:
         loc = page.locator(sel).first
         if await loc.count():
-            await loc.fill(username)
+            await loc.fill(access_code)
             break
     else:
-        print("  ERROR: Could not find username field on login page.")
-        return False
-
-    # Locate password field
-    for sel in ['input[type="password"]']:
-        loc = page.locator(sel).first
-        if await loc.count():
-            await loc.fill(password)
-            break
-    else:
-        print("  ERROR: Could not find password field on login page.")
+        print("  ERROR: Could not find access code field on login page.")
         return False
 
     # Submit
@@ -95,6 +89,7 @@ async def login(page, username: str, password: str) -> bool:
         'button[type="submit"]', 'input[type="submit"]',
         'button:has-text("Login")', 'button:has-text("Log In")',
         'button:has-text("Sign In")', 'button:has-text("Continue")',
+        'button:has-text("Access")', 'button:has-text("Enter")',
     ]:
         btn = page.locator(sel).first
         if await btn.count():
@@ -105,7 +100,7 @@ async def login(page, username: str, password: str) -> bool:
 
     # Confirm we're past the login page
     if "login" in page.url.lower() or "signin" in page.url.lower():
-        print("  ERROR: Still on login page — check credentials.")
+        print("  ERROR: Still on login page — check access code.")
         return False
 
     print("  Logged in successfully.")
@@ -344,8 +339,7 @@ async def _scrape_dom(page, result: dict):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
-    username = os.getenv("MINFOS_USERNAME") or input("Minfos catalogue username: ").strip()
-    password = os.getenv("MINFOS_PASSWORD") or getpass("Minfos catalogue password: ")
+    access_code = os.getenv("MINFOS_ACCESS_CODE") or input("Minfos catalogue access code: ").strip()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = f"barcodes_{timestamp}.csv"
@@ -361,7 +355,7 @@ async def main():
         page = await context.new_page()
 
         print("Step 1/2 — Logging in …")
-        if not await login(page, username, password):
+        if not await login(page, access_code):
             await browser.close()
             sys.exit(1)
 
